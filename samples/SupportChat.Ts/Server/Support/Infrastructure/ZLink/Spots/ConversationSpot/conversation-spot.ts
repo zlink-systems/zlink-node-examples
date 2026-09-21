@@ -1,0 +1,250 @@
+import { Injectable, Scope } from '@nestjs/common';
+import { SampleTimings } from '../../../../../Configuration/sample-names';
+import {
+  ConversationCreateReq,
+  JoinConversationReq,
+  SupportChatRoles
+} from '../../../../../../Shared/Contracts/messages';
+import { Conversation } from '../../../../Domain/SupportChat/conversation';
+import { ConversationIdleTimerHandler } from './Handlers/conversation-idle-timer-handler';
+import { SupportNotificationPublisher } from './Notifications/support-notification-publisher';
+import { AgentAssignmentService } from '../../../../Application/ConversationAssignment/agent-assignment-service';
+import { SupportActorDirectory } from '../../Actors/support-actor-directory';
+import type {
+  ZLinkMessage,
+  ZLinkSpot,
+  ZLinkSpotActorJoinResult,
+  ZLinkSpotContext,
+  ZLinkSpotCreateResponse,
+  ZLinkTimer
+} from '@zlink-systems/framework';
+import type {
+  ChatMessage,
+  ConversationState,
+  SupportRole
+} from '../../../../../../Shared/Contracts/messages';
+import type { ConversationEvent } from '../../../../Domain/SupportChat/conversation-events';
+import type { SupportUserActor } from '../../Actors/support-user-actor';
+
+interface ConversationJoinIntent {
+  readonly actorId: string;
+  readonly participantId: string;
+  readonly role: SupportRole;
+  readonly displayName: string;
+}
+
+interface ConversationParticipant extends ConversationJoinIntent {}
+
+@Injectable({ scope: Scope.TRANSIENT })
+class ConversationSpot implements ZLinkSpot<SupportUserActor> {
+  readonly context!: ZLinkSpotContext<SupportUserActor, ConversationSpot>;
+  private conversation?: Conversation;
+  private readonly actors = new Map<string, ConversationParticipant>();
+  private readonly pendingJoins = new Map<string, ConversationJoinIntent>();
+  private timer?: ZLinkTimer;
+
+  constructor(
+    private readonly assignments: AgentAssignmentService,
+    private readonly directory: SupportActorDirectory,
+    private readonly notifications: SupportNotificationPublisher
+  ) {}
+
+  async onCreate(request: ZLinkMessage): Promise<ZLinkSpotCreateResponse> {
+    const value = request.decode(ConversationCreateReq);
+    this.conversation = new Conversation(
+      String(this.context.spotId),
+      value.customerActorId,
+      value.customerDisplayName,
+      value.subject
+    );
+    const state = this.conversation.snapshot();
+    console.log(`supportchat-conversation created conversation=${state.conversationId}`);
+    this.reportStatus(state);
+    return { accepted: true };
+  }
+
+  async onInitialize(): Promise<void> {
+    this.timer = await this.context.addTimer('conversation-idle', 50, ConversationIdleTimerHandler);
+  }
+
+  async onClosing(): Promise<void> {
+    await this.timer?.cancel();
+  }
+
+  async onActorJoin(actorId: string, request: ZLinkMessage): Promise<ZLinkSpotActorJoinResult> {
+    const join = request.decode(JoinConversationReq);
+    this.pendingJoins.set(actorId, {
+      actorId,
+      participantId: join.participantId,
+      role: join.role,
+      displayName: join.displayName
+    });
+    return { accepted: true, reply: { state: this.snapshot() } };
+  }
+
+  async onJoinedActor(actor: SupportUserActor): Promise<void> {
+    const intent = this.pendingJoins.get(actor.actorId);
+    if (intent === undefined) return;
+    this.pendingJoins.delete(actor.actorId);
+    const participant: ConversationParticipant = { ...intent };
+    this.actors.set(actor.actorId, participant);
+    if (participant.role === SupportChatRoles.Agent) {
+      const previousStatus = this.requireConversation().snapshot().status;
+      const joined = this.requireConversation().join(
+        participant.participantId,
+        SupportChatRoles.Agent,
+        participant.displayName
+      );
+      console.log(
+        `supportchat-conversation agent-joined conversation=${joined.state.conversationId} agent=${participant.participantId}`
+      );
+      this.reportStatusTransition(previousStatus, joined.state);
+      const customer = this.findParticipant(joined.state.customerActorId);
+      await this.notifications.publish(
+        joined.event,
+        customer === undefined ? [actor.actorId] : [customer.actorId, actor.actorId]
+      );
+      return;
+    }
+    // --8<-- [start:doc-sc-assign]
+    const agentActorId = this.assignments.assignNextAgent();
+    if (agentActorId === undefined) return;
+    const roster = this.directory.get(agentActorId);
+    if (roster === undefined) {
+      throw new Error(`Assigned roster actor '${agentActorId}' was not found.`);
+    }
+    // --8<-- [start:doc-sc-roster-push]
+    const assigned = this.assignAgent(agentActorId, roster.displayName);
+    await this.notifications.publish(assigned.event, [roster.actorId]);
+    // --8<-- [end:doc-sc-roster-push]
+    // --8<-- [end:doc-sc-assign]
+  }
+
+  async onLeaveActor(actor: SupportUserActor): Promise<void> {
+    this.actors.delete(actor.actorId);
+  }
+
+  async onDisconnectActor(_actor: SupportUserActor): Promise<void> {}
+
+  snapshot(): ConversationState {
+    return this.requireConversation().snapshot();
+  }
+
+  assignAgent(
+    agentActorId: string,
+    displayName: string
+  ): { state: ConversationState; event: ConversationEvent } {
+    return this.requireConversation().assign(agentActorId, displayName);
+  }
+
+  join(actorId: string): ConversationState {
+    const actor = this.requireActor(actorId);
+    const previousStatus = this.requireConversation().snapshot().status;
+    const joined = this.requireConversation().join(
+      actor.participantId,
+      actor.role,
+      actor.displayName
+    );
+    this.reportStatusTransition(previousStatus, joined.state);
+    return joined.state;
+  }
+
+  // --8<-- [start:doc-sc-message-push]
+  async sendChat(
+    actorId: string,
+    text: string
+  ): Promise<{ message: ChatMessage; state: ConversationState }> {
+    const actor = this.requireActor(actorId);
+    this.requireParticipant(actor);
+    const previousStatus = this.requireConversation().snapshot().status;
+    const result = this.requireConversation().appendMessage(actor.participantId, text);
+    this.reportStatusTransition(previousStatus, result.state);
+    await this.notifications.publish(result.event, this.otherActorRefs(actor.actorId));
+    return result;
+  }
+  // --8<-- [end:doc-sc-message-push]
+
+  async setTyping(actorId: string, isTyping: boolean): Promise<void> {
+    const actor = this.requireActor(actorId);
+    this.requireParticipant(actor);
+    const event = this.requireConversation().changeTyping(actor.participantId, isTyping);
+    if (event !== undefined)
+      await this.notifications.publish(event, this.otherActorRefs(actor.actorId));
+  }
+
+  async close(actorId: string): Promise<ConversationState> {
+    const actor = this.requireActor(actorId);
+    this.requireParticipant(actor);
+    const closed = this.requireConversation().close();
+    this.reportStatus(closed.state);
+    await this.notifications.publish(closed.event, this.otherActorRefs(actor.actorId));
+    return closed.state;
+  }
+
+  async onTimer(now = Date.now()): Promise<string | undefined> {
+    const conversation = this.requireConversation();
+    if (conversation.shouldBecomeIdle(now, SampleTimings.idleTimeout)) {
+      const idle = conversation.markIdle(now + SampleTimings.closeGraceTimeout);
+      this.reportStatus(idle.state);
+      if (idle.event !== undefined) await this.notifications.publish(idle.event, this.actorRefs());
+      return undefined;
+    }
+    if (conversation.shouldCloseAfterIdle(now)) {
+      const closed = conversation.close();
+      this.reportStatus(closed.state);
+      await this.notifications.publish(closed.event, this.actorRefs());
+      //  Keep the Spot alive in the logical Closed state (parity with the
+      //  .NET sample). A User Spot with remaining Actor members must not be
+      //  closed (spec 15 §Close), and the Closed-state domain rejection is
+      //  what turns later SendChatMessageReq into a typed Rejected reply.
+      return closed.state.agentActorId;
+    }
+    return undefined;
+  }
+
+  private requireParticipant(actor: ConversationParticipant): void {
+    if (!this.requireConversation().canParticipate(actor.participantId)) {
+      throw new Error(`Actor '${actor.participantId}' is not a conversation participant.`);
+    }
+  }
+
+  private otherActorRefs(sourceActorId: string): string[] {
+    return [...this.actors.values()]
+      .filter((actor) => actor.actorId !== sourceActorId)
+      .map((actor) => actor.actorId);
+  }
+
+  private actorRefs(): string[] {
+    return [...this.actors.values()].map((actor) => actor.actorId);
+  }
+
+  private findParticipant(participantId: string): ConversationParticipant | undefined {
+    return [...this.actors.values()].find((actor) => actor.participantId === participantId);
+  }
+
+  private reportStatus(state: ConversationState): void {
+    console.log(
+      `supportchat-conversation status=${state.status} conversation=${state.conversationId}`
+    );
+  }
+
+  private reportStatusTransition(previousStatus: string, state: ConversationState): void {
+    if (previousStatus !== state.status) this.reportStatus(state);
+  }
+
+  private requireActor(actorId: string): ConversationParticipant {
+    const actor = this.actors.get(actorId);
+    if (actor === undefined)
+      throw new Error(`Actor '${actorId}' is not joined to this conversation.`);
+    return actor;
+  }
+
+  private requireConversation(): Conversation {
+    if (this.conversation === undefined) {
+      throw new Error('Conversation Spot has not been created.');
+    }
+    return this.conversation;
+  }
+}
+
+export { ConversationSpot };

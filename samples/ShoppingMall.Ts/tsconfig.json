@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "sourceMap": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "declaration": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": false
+  },
+  "include": [
+    "Client/**/*.ts",
+    "Server/**/*.ts",
+    "Shared/**/*.ts"
+  ]
+}

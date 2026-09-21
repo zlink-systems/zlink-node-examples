@@ -1,0 +1,274 @@
+import { ZoneState } from '../../../Domain/zone-state';
+import { Inject, Injectable, Scope } from '@nestjs/common';
+import { ZLINK_ACTOR_CLIENT, ZLINK_SPOT_PUBLISHER_CLIENT } from '@zlink-systems/nestjs';
+import { ZoneWorldNames, ZoneWorldSpec } from '../../../../../Shared/spec';
+import type { ZoneId } from '../../../../../Shared/spec';
+import {
+  BotTickMsg,
+  EnterZoneReq,
+  EnterZoneRes,
+  JoinWorldRes,
+  ZoneChangedNotify,
+  ZoneBorderEvent,
+  ZoneStateNotify
+} from '../../../../../Shared/contracts';
+import type {
+  ZLinkActorClient,
+  ZLinkMessage,
+  ZLinkSpot,
+  ZLinkSpotActorJoinResult,
+  ZLinkSpotContext,
+  ZLinkSpotPublisherClient,
+  ZLinkTimer
+} from '@zlink-systems/framework';
+import type { PlayerActor } from '../Actors/player-actor';
+import { DeliverZoneNotificationMsg } from '../Actors/player-actor';
+import { adjacentZones } from '../../../Domain/world';
+import { BotTickHandler, ZoneTickHandler } from '../Handlers/zone-runtime-handlers';
+import { NodeRuntimeState } from '../../../Domain/node-runtime-state';
+
+interface ZoneParticipant {
+  readonly actorId: string;
+  x: number;
+  y: number;
+  readonly zoneId: ZoneId;
+  readonly isBot: boolean;
+}
+
+@Injectable({ scope: Scope.TRANSIENT })
+class ZoneSpot implements ZLinkSpot<PlayerActor> {
+  readonly context!: ZLinkSpotContext<PlayerActor, ZoneSpot>;
+  private state?: ZoneState;
+  private readonly actors = new Map<string, ZoneParticipant>();
+  private readonly pendingJoins = new Map<string, EnterZoneReq>();
+  private timer?: ZLinkTimer;
+  private botTimer?: ZLinkTimer;
+  private botTickTask?: Promise<void>;
+  private botTickFailure?: unknown;
+
+  constructor(
+    private readonly nodeState: NodeRuntimeState,
+    @Inject(ZLINK_ACTOR_CLIENT) private readonly actorClient: ZLinkActorClient,
+    @Inject(ZLINK_SPOT_PUBLISHER_CLIENT) private readonly publisher: ZLinkSpotPublisherClient
+  ) {}
+
+  async onInitialize(): Promise<void> {
+    this.state = new ZoneState(String(this.context.spotId) as ZoneId);
+    this.nodeState.hostZone(String(this.context.spotId));
+    console.log(`zone spot initialized zone=${String(this.context.spotId)}`);
+    this.timer = await this.context.addTimer(
+      'zone-tick',
+      ZoneWorldSpec.tickPeriodMs,
+      ZoneTickHandler,
+      { stopOnUnhandledException: false }
+    );
+    this.botTimer = await this.context.addTimer(
+      'bot-tick',
+      ZoneWorldSpec.botTickPeriodMs,
+      BotTickHandler,
+      { stopOnUnhandledException: false }
+    );
+  }
+
+  async onClosing(): Promise<void> {
+    await this.timer?.cancel();
+    await this.botTimer?.cancel();
+    this.timer = undefined;
+    this.botTimer = undefined;
+    this.nodeState.releaseZone(String(this.context.spotId));
+  }
+
+  async onActorJoin(actorId: string, request: ZLinkMessage): Promise<ZLinkSpotActorJoinResult> {
+    const enter = request.decode(EnterZoneReq);
+    if (enter.playerId !== actorId) {
+      console.log(
+        `zone admission rejected zone=${String(this.context.spotId)} player=${actorId} reason=player-id`
+      );
+      return { accepted: false };
+    }
+    // --8<-- [start:doc-zw-admission]
+    if (this.nodeState.rejectsArrival()) {
+      console.log(
+        `zone admission rejected zone=${String(this.context.spotId)} player=${actorId} reason=maintenance`
+      );
+      return {
+        accepted: false,
+        reply: new EnterZoneRes(String(this.context.spotId), 'ZoneMaintenance')
+      };
+    }
+    console.log(
+      `zone admission accepted zone=${String(this.context.spotId)} player=${actorId} initial=${enter.initialEntry}`
+    );
+    this.pendingJoins.set(actorId, enter);
+    return { accepted: true };
+    // --8<-- [end:doc-zw-admission]
+  }
+
+  async onJoinedActor(actor: PlayerActor): Promise<void> {
+    const actorId = actor.actorId;
+    const enter = this.pendingJoins.get(actorId);
+    if (enter === undefined) {
+      console.log(`zone join commit missing zone=${String(this.context.spotId)} player=${actorId}`);
+      return;
+    }
+    this.pendingJoins.delete(actorId);
+    const participant: ZoneParticipant = {
+      actorId,
+      x: enter.x,
+      y: enter.y,
+      zoneId: this.requireState().zoneId,
+      isBot: enter.isBot
+    };
+    actor.x = participant.x;
+    actor.y = participant.y;
+    actor.zoneId = participant.zoneId;
+    actor.isBot = participant.isBot;
+    this.actors.set(actorId, participant);
+    this.nodeState.joined(actorId, participant.zoneId);
+    this.requireState().enter(actorId, participant.x, participant.y, participant.isBot);
+    if (!participant.isBot && !enter.initialEntry) {
+      await this.notifyActor(
+        participant.actorId,
+        new ZoneChangedNotify(actorId, participant.zoneId)
+      );
+    }
+    console.log(
+      `zone player entered zone=${participant.zoneId} player=${actorId} initial=${enter.initialEntry}`
+    );
+  }
+
+  async onLeaveActor(actor: PlayerActor): Promise<void> {
+    const participant = this.actors.get(actor.actorId);
+    this.actors.delete(actor.actorId);
+    if (participant !== undefined) this.nodeState.left(participant.actorId, participant.zoneId);
+    this.requireState().leave(actor.actorId);
+  }
+
+  async onDisconnectActor(_actor: PlayerActor): Promise<void> {}
+
+  rejoin(actor: PlayerActor): JoinWorldRes {
+    const state = this.requireState();
+    const participant: ZoneParticipant = {
+      actorId: actor.actorId,
+      x: actor.x,
+      y: actor.y,
+      zoneId: state.zoneId,
+      isBot: actor.isBot
+    };
+    this.actors.set(actor.actorId, participant);
+    this.nodeState.joined(actor.actorId, participant.zoneId);
+    state.enter(actor.actorId, participant.x, participant.y, participant.isBot);
+    return new JoinWorldRes(actor.actorId, participant.zoneId, participant.x, participant.y, null);
+  }
+
+  updatePosition(actorId: string, x: number, y: number): void {
+    const actor = this.actors.get(actorId);
+    if (actor === undefined) throw new Error(`Player '${actorId}' is not joined to this zone.`);
+    actor.x = x;
+    actor.y = y;
+    this.requireState().updatePosition(actorId, x, y);
+  }
+
+  applyBorder(event: ZoneBorderEvent): void {
+    if (event.toZoneId !== String(this.context.spotId)) return;
+    this.requireState().applyBorderSnapshot(event.fromZoneId, event.tick, event.players);
+  }
+
+  async tick(): Promise<void> {
+    const state = this.requireState();
+    const tick = state.nextTick();
+    const visible = state.visiblePlayers();
+    // The Zone Spot owns border synchronization. Admit those events before
+    // client pushes so a slow bound session cannot delay state shared with an
+    // adjacent Zone Spot.
+    // --8<-- [start:doc-zw-border-publish]
+    for (const adjacent of adjacentZones(state.zoneId)) {
+      await this.publisher
+        .publish(
+          ZoneWorldNames.zoneMesh,
+          ZoneWorldNames.bridgeMesh,
+          ZoneWorldNames.borderTopic(state.zoneId, adjacent),
+          new ZoneBorderEvent(state.zoneId, adjacent, tick, state.borderBandFor(adjacent))
+        )
+        .submit();
+    }
+    // --8<-- [end:doc-zw-border-publish]
+    await Promise.allSettled(
+      [...this.actors.values()]
+        .filter((actor) => !actor.isBot)
+        .map((actor) =>
+          this.notifyActor(actor.actorId, new ZoneStateNotify(state.zoneId, tick, visible))
+        )
+    );
+    for (const zoneId of state.expireStaleSnapshots()) {
+      console.log(`border snapshot expired zone=${state.zoneId} source=${zoneId} tick=${tick}`);
+    }
+  }
+
+  async pushHumans(payload: unknown): Promise<void> {
+    await Promise.allSettled(
+      [...this.actors.values()]
+        .filter((actor) => !actor.isBot)
+        .map((actor) => this.notifyActor(actor.actorId, payload))
+    );
+  }
+
+  tickBots(): void {
+    if (this.botTickFailure !== undefined) {
+      const failure = this.botTickFailure;
+      this.botTickFailure = undefined;
+      throw failure;
+    }
+    if (!this.nodeState.canTickBots()) return;
+    if (this.botTickTask !== undefined) return;
+    const task = this.runBotTicks();
+    this.botTickTask = task;
+    void task.then(
+      () => {
+        if (this.botTickTask === task) this.botTickTask = undefined;
+      },
+      (error: unknown) => {
+        this.botTickFailure = error;
+        if (this.botTickTask === task) this.botTickTask = undefined;
+      }
+    );
+  }
+
+  private async runBotTicks(): Promise<void> {
+    for (const actor of [...this.actors.values()].filter((candidate) => candidate.isBot)) {
+      // Movement is owned by the Actor turn. The Spot timer only submits the
+      // command, so it must not depend on a reply terminal before scheduling
+      // the next tick.
+      await this.actorClient.sendToActor(actor.actorId, new BotTickMsg()).submit();
+    }
+  }
+
+  private async notifyActor(actorId: string, payload: unknown): Promise<void> {
+    try {
+      await this.actorClient.sendToActor(actorId, new DeliverZoneNotificationMsg(payload)).submit();
+    } catch (error) {
+      // A repeated relocation that returns an actor to this node (ZW-B7) can
+      // leave the first send resolving the previous tenure's cached route,
+      // which the framework refuses with a terminal stale error instead of
+      // guessing. The failure invalidates that cache, so one deterministic
+      // re-resolve retry reaches the committed owner. The framework never
+      // resubmits on its own; retrying is an application decision.
+      if (!isStaleRouteError(error)) throw error;
+      console.log(
+        `actor notify re-resolved after stale route zone=${String(this.context.spotId)} player=${actorId}`
+      );
+      await this.actorClient.sendToActor(actorId, new DeliverZoneNotificationMsg(payload)).submit();
+    }
+  }
+
+  private requireState(): ZoneState {
+    if (this.state === undefined) throw new Error('Zone spot has not initialized.');
+    return this.state;
+  }
+}
+
+function isStaleRouteError(error: unknown): boolean {
+  return error instanceof Error && /stale/i.test(error.message);
+}
+
+export { ZoneSpot };

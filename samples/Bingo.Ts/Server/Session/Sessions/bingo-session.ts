@@ -1,0 +1,47 @@
+import type {
+  ZLinkMessage,
+  ZLinkSession,
+  ZLinkSessionContext,
+  ZLinkSessionDispatchContext,
+  ZLinkSessionFactory
+} from '@zlink-systems/framework';
+
+class BingoSession implements ZLinkSession {
+  constructor(readonly context: ZLinkSessionContext) {}
+
+  // --8<-- [start:doc-bingo-session-relay]
+  async onDispatch(
+    dispatch: ZLinkSessionDispatchContext,
+    payload: ZLinkMessage,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (await this.context.handlers.tryHandle(dispatch, payload)) {
+      return;
+    }
+    const actor = this.context.actors.bound.length === 1 ? this.context.actors.bound[0] : undefined;
+    if (actor === undefined) {
+      throw new Error(`Client must authenticate before relaying packet '${dispatch.packetName}'.`);
+    }
+    await actor.relay(payload, signal);
+  }
+  // --8<-- [end:doc-bingo-session-relay]
+
+  // --8<-- [start:doc-bingo-session-disconnect]
+  async onDisconnected(): Promise<void> {
+    const actors = this.context.actors.bound;
+    // Framework cleanup owns disconnect notification; this callback only records
+    // the sample lifecycle evidence without submitting another notification.
+    console.error(
+      `bingo-lifecycle session-disconnect actor=${actors[0]?.actorId ?? '-'} destroy=false`
+    );
+  }
+  // --8<-- [end:doc-bingo-session-disconnect]
+}
+
+class BingoSessionFactory implements ZLinkSessionFactory<BingoSession> {
+  async create(context: ZLinkSessionContext): Promise<BingoSession> {
+    return new BingoSession(context);
+  }
+}
+
+export { BingoSession, BingoSessionFactory };

@@ -1,0 +1,63 @@
+import { ZLinkModule, zlinkFramework, zlinkModule } from '@zlink-systems/nestjs';
+import { DeliveryDispatchNodeIds, SampleNames } from '../../Shared/Configuration/sample-names';
+import { CourierSessionFactory } from './courier-session';
+import {
+  createDeliveryDispatchLocationStore,
+  deliveryDispatchLocationOptions
+} from '../Configuration/location-store';
+import {
+  DELIVERYDISPATCH_SAMPLE_CONFIG,
+  createDeliveryDispatchConfigurationModule
+} from '../Configuration/sample-config';
+import type { DeliveryDispatchServerConfig } from '../Configuration/sample-config';
+
+function createCourierSessionModule() {
+  class CourierSessionModule {}
+  const configuration = createDeliveryDispatchConfigurationModule([
+    'courierStreamEndpoint',
+    'courierSessionSpotEndpoint',
+    'redisEndpoint',
+    'redisKeyPrefix',
+    'logDir'
+  ]);
+
+  zlinkModule(__dirname, {
+    imports: [
+      configuration,
+      ZLinkModule.forRootFactory({
+        imports: [configuration],
+        inject: [DELIVERYDISPATCH_SAMPLE_CONFIG],
+        useFactory: (config: DeliveryDispatchServerConfig) => {
+          const builder = zlinkFramework();
+          builder.configureDispatch().messageFlow('normal');
+          builder.addLocationStore(createDeliveryDispatchLocationStore(config));
+          deliveryDispatchLocationOptions(builder.configureLocations());
+          const mesh = builder
+            .addRouteMesh(SampleNames.courierMeshName)
+            .listen(config.courierSessionSpotEndpoint)
+            .routingId(DeliveryDispatchNodeIds.courierSession);
+          mesh.objects().client();
+          return builder
+            .addStreamNode(SampleNames.courierStreamNode)
+            .enableActorDispatch()
+            .bind(config.courierStreamEndpoint)
+            .registerSession(CourierSessionFactory)
+            .build();
+        }
+      })
+    ],
+    providers: [
+      {
+        provide: 'DELIVERYDISPATCH_LOCATION_STORE',
+        inject: [DELIVERYDISPATCH_SAMPLE_CONFIG],
+        useFactory: (config: DeliveryDispatchServerConfig) =>
+          createDeliveryDispatchLocationStore(config)
+      },
+      CourierSessionFactory
+    ]
+  })(CourierSessionModule);
+
+  return CourierSessionModule;
+}
+
+export { createCourierSessionModule };
