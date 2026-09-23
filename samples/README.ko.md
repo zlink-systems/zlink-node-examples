@@ -19,7 +19,7 @@ TicTacToe만 MeshNode peer endpoint를 수동으로 설정한다. 다른 sample�
 구성할 때 Redis Location Store를 사용한다.
 
 업무 흐름, 메시지 계약과 smoke 순서 같은 언어 중립 내용은 저장소의
-[framework 공통 sample 문서](../../../doc/framework/common/sample/README.ko.md)가 소유한다(저장소
+[framework 공통 sample 문서](https://github.com/zlink-systems/zlink/blob/main/framework/doc/framework/common/sample/README.ko.md)가 소유한다(저장소
 안에서만 열린다 — 실행에는 필요 없다).
 
 ## 전제 조건
@@ -110,7 +110,7 @@ Linux·WSL에는 별도 빌드 단계가 없다 — 아래 「실행」의 `run_
 모든 sample을 확인하려면 경로의 `Bingo.Ts` 자리에 `DeliveryDispatch.Ts`, `GameQuest.Ts`,
 `ShoppingMall.Ts`, `SupportChat.Ts`, `TicTacToe.Ts`, `ZoneWorld`를 차례로 넣어 각각 실행한다
 (`ZoneWorld`에만 `.Ts` 접미사가 없다). 실행 방법의 세부 기준은 저장소의
-[공통 sample 문서](../../../doc/framework/common/sample/README.ko.md) 「샘플 실행 스크립트와
+[공통 sample 문서](https://github.com/zlink-systems/zlink/blob/main/framework/doc/framework/common/sample/README.ko.md) 「샘플 실행 스크립트와
 Redis 격리 기준」 절이 소유한다.
 
 Runner는 역할별 설정 파일 생성, server 시작, Redis container 실행, readiness 확인, client
@@ -165,5 +165,5 @@ runtime으로 사용되지 않는다.
 `ZoneWorld/Browser/`가 이 언어의 browser UI다 — 저장소 안에서는 모든 언어 server에 연결하는
 공유 TypeScript 소스(`framework/languages/shared_sample/zoneworld/client/`)와 같은 내용이고,
 이 디렉터리 하나만으로도 완결된다. 자세한 connector 사용법은 저장소의
-[TypeScript Stream Connector guide](../../../doc/framework/node/guide/stream-connector/README.ko.md)를
+[TypeScript Stream Connector guide](https://github.com/zlink-systems/zlink/blob/main/framework/doc/framework/node/guide/stream-connector/README.ko.md)를
 참고한다.

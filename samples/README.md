@@ -19,7 +19,7 @@ Only TicTacToe wires a MeshNode peer endpoint by hand. The other samples use the
 store to find Spot and Actor placement and to wire up peers.
 
 Language-neutral content — business flow, message contracts and the smoke sequence — is owned by
-the repository's [common sample document](../../../doc/framework/common/sample/README.en.md) (only
+the repository's [common sample document](https://github.com/zlink-systems/zlink/blob/main/framework/doc/framework/common/sample/README.en.md) (only
 reachable from inside the repository; not needed to run the samples).
 
 ## Prerequisites
@@ -110,7 +110,7 @@ Checking all seven means seven invocations. Put `DeliveryDispatch.Ts`, `GameQues
 `ShoppingMall.Ts`, `SupportChat.Ts`, `TicTacToe.Ts`, `ZoneWorld` in place of `Bingo.Ts` in turn to
 run them one at a time (only `ZoneWorld` has no `.Ts` suffix). The detailed criteria for how a
 run works are owned by the repository's
-[common sample document](../../../doc/framework/common/sample/README.en.md), in the section on
+[common sample document](https://github.com/zlink-systems/zlink/blob/main/framework/doc/framework/common/sample/README.en.md), in the section on
 sample run scripts and Redis isolation.
 
 The runner generates each role's config file, starts the servers, starts its own Redis container,
@@ -168,5 +168,5 @@ headless Chromium — it is never used as the Stream Connector's client runtime.
 as the shared TypeScript source (`framework/languages/shared_sample/zoneworld/client/`) that every
 language's server connects to, and this one directory is self-contained on its own. See the
 repository's
-[TypeScript Stream Connector guide](../../../doc/framework/node/guide/stream-connector/README.en.md)
+[TypeScript Stream Connector guide](https://github.com/zlink-systems/zlink/blob/main/framework/doc/framework/node/guide/stream-connector/README.en.md)
 for how to use the connector.

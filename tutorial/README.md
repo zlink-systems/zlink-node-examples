@@ -2,7 +2,7 @@
 
 A program that the feature guides read through, chapter by chapter. This directory carries over
 **Channel messaging and one id-addressed Spot** from
-[`../../dotnet/tutorial/`](../../dotnet/tutorial/). It does not cover Actor or STREAM.
+[`https://github.com/zlink-systems/zlink/blob/main/framework/languages/dotnet/tutorial`](https://github.com/zlink-systems/zlink/blob/main/framework/languages/dotnet/tutorial). It does not cover Actor or STREAM.
 
 ## Why this is separate from quickstart and the samples
 
@@ -512,12 +512,25 @@ npm start
 ```
 connected: true
 round trip: 6ms          # STREAM request/reply
+actor bound: p1
 bound player: p1         # binds the connection to a player
-pushed: speedy           # the player pushes over that connection
+pushed: speedy, actor: p1 # connector send and receive without a handle
+actor bound: p2
+bound player: p2
+actor handle: p1
+actor handle: p2
+received actor id: p1
+received actor id: p2
+pushed: speedy-p1, actor: p1           # each handle receives its own push
+pushed: speedy-p2, actor: p2
+actor unbound: p1
+actor unbound: p2
 ```
 
-`pushed` is the key line. The client only sent a nickname change, and instead of a response, it
-received **a notification the player itself pushed**.
+The first `pushed` line uses the connector directly while only p1 is bound. Once p2 binds,
+each Actor handle receives its own push; a connector-level callback also reads the Actor ID
+on those same pushes. Both players share one connection, and the packet's Actor slot selects
+which player receives it.
 
 Things worth knowing on the Node side:
 
@@ -767,7 +780,7 @@ marked by `--8<--` markers in the source. Marker names match the .NET tutorial.
 | `session-handler` | `Server/Sessions/ping-handler.ts` |
 | `session-actor-bind` | `Server/Sessions/authenticate-handler.ts` |
 | `stream-register` | `Server/main.ts` |
-| `stream-client` / `session-actor-client` | `StreamClient/main.ts` |
+| `stream-client` / `session-actor-client` / `single-actor-send` / `actor-id-receive` / `actor-handle-events` / `actor-handle-send` / `actor-handle-per-handle-receive` / `actor-handle-send-call` / `actor-handle-receive` | `StreamClient/main.ts` |
 | `http-client-create` | `HttpClient/main.ts` |
 | `http-first-request` | `HttpClient/main.ts` |
 | `http-request-shaping` | `HttpClient/main.ts` |
@@ -827,5 +840,4 @@ checked inside the repository is not included in the mirror repository). The pla
 | Topic | What the documentation says |
 |---|---|
 | `ZLinkRouteClient` carries `sendToSpot`/`requestToSpot` | The Node interface spec, chapter 02 §4, puts both on `ZLinkRouteClient` with a `spotId: SpotId` argument. The public contract `contracts/Channels/RouteCalls.ts`'s `ZLinkRouteClient` has neither (they are on `ZLinkSpotClient`); the implementation `DefaultZLinkRouteClient` has them, but with a `SpotHandle` argument |
-| The NestJS builder's way to name a Fanout subscription topic | Chapter 02 §1's `ZLinkFanoutChannelBuilder` has `subscribe(topic)`, `connect(endpoint)` and `subscriberConnections()`. `@zlink-systems/nestjs`'s `ZLinkNestFanoutChannelBuilder` has none of the three, only `enableSubscriber(endpoint?)`. Registering no topic at all subscribes to everything under an empty prefix |
 | `@zlink-systems/zlink@1.2.0`'s prebuild coverage (resolved by framework 0.18.1's `1.2.1`) | The package's `files` field was written to ship `prebuilds/win32-*/*.dll` and `prebuilds/darwin-*/*.dylib`. 1.2.0's published tarball carried only `prebuilds/linux-x64/`, so Windows and macOS fell back to a source build (#656). 1.2.1 adds `prebuilds/win32-x64/`, and `@zlink-systems/framework` pins that version starting at 0.18.1 — `darwin-*` is still missing |
