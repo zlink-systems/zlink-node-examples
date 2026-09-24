@@ -45,14 +45,14 @@ npm install
 npm install
 ```
 
-| Package | Pinned version | Why |
+| Package | Version source | Why |
 |---|---|---|
-| `@zlink-systems/framework` | `0.18.0` | `npm view @zlink-systems/framework versions` → `0.10.0` through `0.18.0` |
-| `@zlink-systems/framework-locations-redis` | `0.18.0` | Same list. The Location Store/Relocation Store implementation the Spot stage needs |
-| `@zlink-systems/nestjs` | `0.18.0` | Same list. Depends on `@zlink-systems/framework: '0.18.0'` exactly |
-| `@nestjs/common`/`@nestjs/core` | `10.4.22` | `@zlink-systems/nestjs@0.18.0` depends on and peer-depends on `^10.4.22` |
-| `reflect-metadata` | `0.2.2` | Satisfies `@zlink-systems/nestjs@0.18.0`'s `^0.2.2` range |
-| `@zlink-systems/zlink` | Not pinned | `@zlink-systems/framework` pins it exactly. 0.18.0 pins `1.2.0`; starting at 0.18.1 it pins `1.2.1`, which ships the win32-x64 prebuild (#656). Left to transitive resolution |
+| `@zlink-systems/framework` | `package.json` | Framework runtime |
+| `@zlink-systems/framework-locations-redis` | `package.json` | Location Store and Relocation Store for the Spot stage |
+| `@zlink-systems/nestjs` | `package.json` | NestJS integration |
+| `@nestjs/common`/`@nestjs/core` | `package.json` | NestJS dependency injection |
+| `reflect-metadata` | `package.json` | Decorator metadata |
+| `@zlink-systems/zlink` | Transitive dependency | `@zlink-systems/framework` pins the Core binding version |
 
 The three `@zlink-systems` package versions are updated by the repository's
 `scripts/local-package/sync-version.py` to match `framework/languages/node/VERSION` (repository
@@ -94,7 +94,7 @@ npm run build:http-client
 
 ## Run
 
-[Complete the [Build](#build) section first. Redis is required (the Spot stage uses it). There is no runner here, so this tutorial starts one
+Complete the [Build](#build) section first. Redis is required (the Spot stage uses it). There is no runner here, so this tutorial starts one
 itself — and you clean it up yourself when done. Following along in two terminals, you can just
 run `npm run server` then `npm run client` directly. The block below does the same thing
 unattended, backgrounding both and leaving their PID in a file.
@@ -130,7 +130,7 @@ Examples smoke runs this block exactly as written.
 The server and client each print a line like this on a healthy start.
 
 ```
-server listening on tcp://0.0.0.0:7701 (mesh "game", routing id "game-server-1")
+server listening on tcp://127.0.0.1:7701 (mesh "game", routing id "game-server-1")
 server admin listening on http://127.0.0.1:5481
 ```
 
@@ -202,12 +202,27 @@ to npm `build`. Stop with the ■ Stop button.
 | Symptom | Cause and fix |
 |---|---|
 | `docker: Cannot connect to the Docker daemon` | Docker Desktop (or `dockerd`) is not running. Start it and try again |
+| `docker: Error response from daemon: ... port is already allocated` / `Bind for 127.0.0.1:6379 failed` | Another Redis owns 6379. Clear this tutorial's keys as shown below before reusing it, or start with a fresh Redis on 6379 |
 | `curl` returns `Connection refused` | The server (`npm run server`) is not up yet or has died. Check that terminal's log first |
+| Server fails to start after a forced stop | The previous owner lease can remain valid for up to 15 seconds ([default owner lease TTL](https://github.com/zlink-systems/zlink/blob/main/framework/doc/framework/common/spec/server/05-location-relocation/01-location-runtime.ko.md#L670-L674)). Wait for it to expire, then start the Server again; a failed start does not retry. To restart immediately, stop earlier tutorial processes and clear this tutorial's keys with the command below |
 | `EADDRINUSE` (port conflict) | Another process already holds one of the ports in "Ports" below. Stop it, or clean up another running instance of this tutorial first |
 | `npm error gyp ERR! ... ZLINK_CORE_INSTALL_PREFIX must name an absolute installed Core ... package prefix` (Windows) | An earlier framework release pins `@zlink-systems/framework` older than 0.18.1, so it still gets `zlink@1.2.0` — the win32-x64 prebuild (#656) ships from framework 0.18.1 (`zlink@1.2.1`) on. Get that version, or run it under WSL |
 | Same error (macOS) | `@zlink-systems/zlink@1.2.1` also has no `darwin-*` prebuild yet. Run it on Linux (x64) or Windows (0.18.1 on) |
 | `EBADENGINE` (Node version warning) | Node.js is older than 22. Upgrade per "Prerequisites" above |
 | `server listening` takes 20-45 seconds to appear | The project sits on a WSL 9p mount such as `/mnt/d`; module loading alone takes this long there. Moving it to a Linux filesystem (e.g. `~/`) cuts this down |
+
+When reusing Redis, stop any earlier instance of this tutorial before clearing its Location and
+Relocation Store records. Run the command for your shell before the [Run](#run) block, then omit
+only its `docker run` line. These commands delete only keys under this tutorial's
+`zlink-tutorial-node:` prefix; they require `redis-cli` connected to the Redis on 6379.
+
+```bash title="linux"
+redis-cli --scan --pattern 'zlink-tutorial-node:*' | while IFS= read -r key; do redis-cli DEL "$key" >/dev/null; done
+```
+
+```powershell title="windows"
+redis-cli --scan --pattern 'zlink-tutorial-node:*' | ForEach-Object { redis-cli DEL $_ | Out-Null }
+```
 
 ## Ports
 
@@ -215,11 +230,11 @@ to npm `build`. Stop with the ■ Stop button.
 |---|---|
 | Client's HTTP | `127.0.0.1:5480` |
 | Server's admin HTTP | `127.0.0.1:5481` |
-| Server's mesh listen | `0.0.0.0:7701` (advertises `127.0.0.1`) |
-| Client's mesh listen | `0.0.0.0:7702` (advertises `127.0.0.1`) |
+| Server's mesh listen | `127.0.0.1:7701` (advertises `127.0.0.1`) |
+| Client's mesh listen | `127.0.0.1:7702` (advertises `127.0.0.1`) |
 | ClientServer channel | `127.0.0.1:7711` |
 | Fanout publisher | `127.0.0.1:7712` |
-| Server's stream listen | `0.0.0.0:7721` (WebSocket) |
+| Server's stream listen | `127.0.0.1:7721` (WebSocket) |
 
 ## Project layout
 
@@ -602,7 +617,7 @@ $ node dist/Server/main.js
 [Nest] ... LOG [InstanceLoader] ServerModule dependencies initialized
 [Nest] ... LOG [InstanceLoader] DiscoveryModule dependencies initialized
 [Nest] ... LOG [InstanceLoader] ZLinkModule dependencies initialized
-server listening on tcp://0.0.0.0:7701 (mesh "game", routing id "game-server-1")
+server listening on tcp://127.0.0.1:7701 (mesh "game", routing id "game-server-1")
 server admin listening on http://127.0.0.1:5481
 $ node dist/Client/main.js
 [Nest] ... LOG [NestFactory] Starting Nest application...
@@ -805,7 +820,6 @@ Same idea, different names and locations.
 | Handler construction | The DI container finds it in the assembly | Registered directly as a NestJS `provider`. Filters are the same |
 | Filter registration | `options.UseFilter<CallLogFilter>()` | `builder.options({ filters: [CallLogFilter] })`. Array order is execution order |
 | Pinning a routing id | `SetRoutingId(RoutingId.From("game-server-1"))` | `routingId('game-server-1')`. Node's `RoutingId` is a `string` alias |
-| Wildcard bind | `Listen("tcp://0.0.0.0:7201")` alone works | The advertise host must be given too. Without it, `ZLinkConfigurationException` blocks startup |
 | Direct-node handler | `mesh.AddRouteRequestHandler<...>()` | `mesh.addRequestHandler(packetName, Type)` — the same name as the channel side; distinguished by not going through `mesh.channel(...)` |
 | Fanout subscription handler | `AddHandler<TSub, TMsg>()` | `addPublishHandler(packetName, Type)` |
 | ClientServer call | `IZLinkRouteClient.RequestToChannel(...)` handles both mesh channel and ClientServer | **The client differs.** Mesh channel and direct-node calls use `ZLINK_ROUTE_CLIENT`; ClientServer uses `ZLINK_CHANNEL_CLIENT`. `ZLinkRouteClient.requestToChannel` only finds mesh channels |
