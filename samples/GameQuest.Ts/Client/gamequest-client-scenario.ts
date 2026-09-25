@@ -12,7 +12,11 @@ import {
   unlockFeatureReq
 } from '../Shared/Contracts/messages';
 import type { BrowserHttpClient } from './browser-client-runtime';
-import { zlinkStreamAssert } from '@zlink-systems/stream-connector';
+import {
+  ZlinkStreamErrorCode,
+  ZlinkStreamException,
+  zlinkStreamAssert
+} from '@zlink-systems/stream-connector';
 import type { ZlinkStreamConnector } from '@zlink-systems/stream-connector';
 import type {
   CompleteMissionRes,
@@ -199,12 +203,26 @@ class GameQuestClientScenario {
       .fetch<{ accepted: boolean }>();
     zlinkStreamAssert.ensure(closeOwner.accepted, 'Sample scenario assertion failed.');
 
-    // Close is one-way. Sync observes the completed owner lifecycle before
-    // the next one-way action may start a new Instance activation.
-    const closeSync = await apiBReconnectStream
-      .request(syncQuestProgressReq('player-alice'), Object)
-      .packetName(PacketNames.syncQuestProgressReq)
-      .submit<SyncQuestProgressRes>(signal);
+    // Close is one-way (Spot addressing §5). A sync that still resolves the retired owner ends
+    // with a stale terminal; the Framework does not resubmit it, so the next sync reaches the
+    // next owner. A sync that arrives after the close completed reaches the next owner directly.
+    const syncAfterClose = () =>
+      apiBReconnectStream
+        .request(syncQuestProgressReq('player-alice'), Object)
+        .packetName(PacketNames.syncQuestProgressReq)
+        .submit<SyncQuestProgressRes>(signal);
+    let closeSync: SyncQuestProgressRes;
+    try {
+      closeSync = await syncAfterClose();
+    } catch (error) {
+      if (
+        !(error instanceof ZlinkStreamException) ||
+        error.error.code !== ZlinkStreamErrorCode.RemoteError
+      ) {
+        throw error;
+      }
+      closeSync = await syncAfterClose();
+    }
     const afterCloseFirstHunt = requireQuest(closeSync.updatedQuests, QuestIds.FirstHunt);
     zlinkStreamAssert.ensure(
       afterCloseFirstHunt.currentCount >= beforeDeactivate.currentCount,
