@@ -43,7 +43,7 @@ function createBingoPlayModule() {
             metrics: { meterProvider: bingoMeterProvider }
           });
           builder.setApplicationVersion(1n);
-          builder.configureDispatch().messageFlow('normal');
+          builder.configureDispatch().messageFlow(config.diagnosticsLevel);
           builder.addLocationStore(createBingoLocationStore(config));
           builder.addRelocationStore(createBingoRelocationStore(config));
           bingoLocationOptions(builder.configureLocations());
@@ -54,7 +54,7 @@ function createBingoPlayModule() {
             .setRoutingIdPrefix('play')
             .listen(config.playSpotEndpoint);
           const objectServer = mesh.objects().server();
-          objectServer.addEntrySpot(BingoEntrySpot);
+          objectServer.addEntrySpot(BingoEntrySpot, SampleNames.playerActorType);
           // --8<-- [start:doc-execution-mode]
           // SpotWide is the default. Naming it here keeps the choice visible:
           // every callback of this room runs through one gate.
